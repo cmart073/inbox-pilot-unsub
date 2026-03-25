@@ -1,0 +1,10 @@
+name = "inbox-pilot-unsub"
+main = "src/index.js"
+compatibility_date = "2025-03-01"
+compatibility_flags = ["nodejs_compat"]
+
+[browser]
+binding = "BROWSER"
+
+[vars]
+AUTH_SECRET = "inbox-pilot-2026"

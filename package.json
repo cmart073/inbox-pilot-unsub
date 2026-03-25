@@ -1,0 +1,12 @@
+{
+  "name": "inbox-pilot-unsub",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/puppeteer": "^1.0.6",
+    "wrangler": "^4.0.0"
+  }
+}
