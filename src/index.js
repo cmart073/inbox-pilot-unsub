@@ -25,6 +25,80 @@ const CONFIRM_TEXT_PATTERNS = [
   /stop.*sending/i,
 ];
 
+// Klaviyo / SPA-rendered unsubscribe page handler
+// Covers manage.kmail-lists.com and similar Klaviyo-powered preference pages
+// that render confirm buttons via JavaScript after initial page load.
+async function handleKlaviyoPage(page) {
+  console.log("Detected Klaviyo page — waiting for SPA render...");
+
+  // Klaviyo pages render their UI via JS; give the SPA time to hydrate
+  await new Promise((r) => setTimeout(r, 3000));
+
+  // Strategy A: Look for a visible confirm/unsubscribe button rendered by the SPA
+  const clicked = await page.evaluate(() => {
+    const candidates = Array.from(
+      document.querySelectorAll('button, a, input[type="submit"], [role="button"]')
+    );
+    const patterns = [
+      /unsubscribe/i,
+      /confirm/i,
+      /opt.?out/i,
+      /yes/i,
+      /submit/i,
+    ];
+
+    for (const el of candidates) {
+      const text = el.textContent || el.value || "";
+      const isVisible =
+        el.offsetParent !== null &&
+        getComputedStyle(el).display !== "none" &&
+        getComputedStyle(el).visibility !== "hidden";
+
+      if (isVisible && patterns.some((p) => p.test(text))) {
+        el.click();
+        return { clicked: true, text: text.trim().slice(0, 60) };
+      }
+    }
+    return { clicked: false };
+  });
+
+  if (clicked.clicked) {
+    console.log(`Klaviyo: clicked button with text "${clicked.text}"`);
+    return true;
+  }
+
+  // Strategy B: Some Klaviyo pages use a form POST behind the scenes —
+  // try submitting the first visible form on the page
+  const formSubmitted = await page.evaluate(() => {
+    const form = document.querySelector("form");
+    if (form) {
+      const btn = form.querySelector(
+        'button[type="submit"], input[type="submit"], button:not([type])'
+      );
+      if (btn) {
+        btn.click();
+        return true;
+      }
+      // Last resort: submit the form directly
+      form.submit();
+      return true;
+    }
+    return false;
+  });
+
+  if (formSubmitted) {
+    console.log("Klaviyo: submitted form directly");
+    return true;
+  }
+
+  console.log("Klaviyo: could not find confirm element");
+  return false;
+}
+
+function isKlaviyoUrl(url) {
+  return /manage\.kmail-lists\.com|klaviyo\.com\/unsubscribe/i.test(url);
+}
+
 async function processUnsubscribeUrl(browser, url, email) {
   const result = { url, status: "pending", message: "", screenshots: [] };
 
@@ -67,6 +141,40 @@ async function processUnsubscribeUrl(browser, url, email) {
       result.status = "success";
       result.message = "Unsubscribed (single-click worked)";
       return result;
+    }
+
+    // --- Klaviyo SPA handler ---
+    if (isKlaviyoUrl(url)) {
+      const klaviyoClicked = await handleKlaviyoPage(page);
+      if (klaviyoClicked) {
+        // Wait for navigation or content change after Klaviyo click
+        try {
+          await page.waitForNavigation({ timeout: 10000, waitUntil: "networkidle0" });
+        } catch {
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+
+        const finalText = await page.evaluate(() => document.body?.innerText || "");
+
+        if (
+          /you.*(have been|are|'ve been).*unsubscribed/i.test(finalText) ||
+          /successfully/i.test(finalText) ||
+          /removed/i.test(finalText) ||
+          /no longer/i.test(finalText) ||
+          /updated/i.test(finalText) ||
+          /preferences.*saved/i.test(finalText) ||
+          /thank you/i.test(finalText)
+        ) {
+          result.status = "success";
+          result.message = "Unsubscribed via Klaviyo SPA confirm";
+        } else {
+          result.status = "likely_success";
+          result.message =
+            "Clicked Klaviyo confirm button. Page response unclear — may need manual verification.";
+        }
+        return result;
+      }
+      // If Klaviyo handler didn't find a button, fall through to generic logic
     }
 
     // Look for email input fields — fill them if found
